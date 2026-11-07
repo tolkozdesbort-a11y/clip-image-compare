@@ -34,16 +34,32 @@ if file1 and file2:
         with st.spinner("Сравниваем..."):
             processor, model = load_model()
 
-            inputs = processor(images=[image1, image2], return_tensors="pt")
+            inputs = processor(
+                images=[image1, image2],
+                return_tensors="pt"
+            )
 
             with torch.no_grad():
-                features = model.get_image_features(**inputs)
-                features = features / features.norm(dim=-1, keepdim=True)
+                vision_outputs = model.vision_model(
+                    pixel_values=inputs["pixel_values"]
+                )
 
-            similarity = torch.nn.functional.cosine_similarity(
-                features[0].unsqueeze(0),
-                features[1].unsqueeze(0)
-            ).item()
+                features = model.visual_projection(
+                    vision_outputs.pooler_output
+                )
+
+                features = features / features.norm(
+                    dim=-1,
+                    keepdim=True
+                )
+
+                similarity = torch.nn.functional.cosine_similarity(
+                    features[0].unsqueeze(0),
+                    features[1].unsqueeze(0)
+                ).item()
 
         st.metric("Сходство изображений", f"{similarity * 100:.2f}%")
-        st.caption("Это оценка сходства изображений CLIP, а не вероятность совпадения объектов.")
+        st.caption(
+            "Это оценка сходства изображений CLIP, "
+            "а не вероятность совпадения объектов."
+        )

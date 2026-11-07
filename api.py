@@ -1,12 +1,11 @@
-
 import io
-from typing import List
+from typing import Optional
 
 import torch
 from PIL import Image, UnidentifiedImageError
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from transformers import CLIPModel, CLIPProcessor
+from transformers import CLIPProcessor, CLIPModel
 
 app = FastAPI(title="Visual Product Search API")
 
@@ -41,13 +40,16 @@ def read_image(data):
     except (UnidentifiedImageError, OSError):
         raise HTTPException(
             status_code=400,
-            detail="One of the uploaded files is not a valid image."
+            detail="Invalid image file."
         )
 
 
 @app.get("/")
 def home():
-    return {"status": "online", "service": "CLIP Visual Search API"}
+    return {
+        "status": "online",
+        "service": "CLIP Visual Search API"
+    }
 
 
 @app.get("/health")
@@ -58,37 +60,26 @@ def health():
 @app.post("/rank")
 async def rank_images(
     reference: UploadFile = File(...),
-    candidates: List[UploadFile] = File(...)
+    candidate1: UploadFile = File(...),
+    candidate2: Optional[UploadFile] = File(None),
+    candidate3: Optional[UploadFile] = File(None)
 ):
-    if not candidates:
-        raise HTTPException(
-            status_code=400,
-            detail="Upload at least one candidate image."
-        )
-
-    if len(candidates) > 50:
-        raise HTTPException(
-            status_code=400,
-            detail="Maximum 50 candidate images per request."
-        )
+    files = [candidate1, candidate2, candidate3]
+    files = [f for f in files if f is not None]
 
     reference_image = read_image(await reference.read())
 
-    candidate_images = []
+    images = [reference_image]
     filenames = []
 
-    for candidate in candidates:
-        candidate_images.append(
-            read_image(await candidate.read())
-        )
-        filenames.append(candidate.filename or "image")
-
-    image_list = [reference_image] + candidate_images
+    for file in files:
+        images.append(read_image(await file.read()))
+        filenames.append(file.filename or "image")
 
     image_processor, clip_model = load_model()
 
     inputs = image_processor(
-        images=image_list,
+        images=images,
         return_tensors="pt"
     )
 

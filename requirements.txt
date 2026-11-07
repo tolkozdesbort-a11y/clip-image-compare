@@ -2,3 +2,6 @@ streamlit
 torch
 transformers
 Pillow
+fastapi
+uvicorn
+python-multipart

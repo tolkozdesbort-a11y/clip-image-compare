@@ -3,5 +3,8 @@ torch
 transformers
 Pillow
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
+numpy
+requests
+joblib

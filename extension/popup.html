@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Visual Search collector</title>
+  <style>
+    body{font:14px system-ui,sans-serif;width:340px;padding:14px;color:#202124}
+    label{display:block;margin:10px 0 4px;font-weight:600}
+    input{box-sizing:border-box;width:100%;padding:8px;border:1px solid #bbb;border-radius:6px}
+    button{width:100%;padding:10px;margin-top:12px;border:0;border-radius:6px;background:#185abc;color:white;font-weight:600;cursor:pointer}
+    button:disabled{opacity:.5}
+    #status{white-space:pre-wrap;margin-top:12px;line-height:1.45}
+    small{color:#555}
+  </style>
+</head>
+<body>
+  <strong>Visual Search — Avito</strong>
+  <label for="api">Адрес API</label>
+  <input id="api" placeholder="https://your-api.example.com">
+  <label for="key">API key</label>
+  <input id="key" type="password" placeholder="Ключ, если включён на сервере">
+  <button id="save">Сохранить настройки</button>
+  <button id="collect">Отправить видимые объявления</button>
+  <div id="status">Открой страницу поиска Avito. Расширение читает только уже отображённые карточки.</div>
+  <small>Ключ хранится в локальном хранилище Chrome и доступен этому расширению. Не используй один и тот же ключ для других сервисов.</small>
+  <script src="popup.js"></script>
+</body>
+</html>

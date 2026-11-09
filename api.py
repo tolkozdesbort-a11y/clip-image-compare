@@ -296,8 +296,7 @@ async def search(
     require_key(x_api_key)
     if top_k < 1 or top_k > MAX_TOP_K:
         raise HTTPException(status_code=400, detail=f"top_k must be between 1 and {MAX_TOP_K}.")
-    if clip_weight < 0 or dino_weight < 0 or clip_weight + dino_weight <= 0:
-        raise HTTPException(status_code=400, detail="Weights must be non-negative and not both zero.")
+    cw, dw = normalize_weights(clip_weight, dino_weight)
 
     query_image = decode_image(await read_upload(reference))
     try:

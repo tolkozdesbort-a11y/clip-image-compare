@@ -1,58 +1,99 @@
+"""Persistent CLIP + DINOv2 visual catalog API.
+
+The service stores image embeddings and listing metadata in SQLite. It deliberately
+indexes only images explicitly submitted by an authorized client; it does not crawl
+marketplaces or bypass access controls.
+"""
 import io
+import json
 import os
+import sqlite3
 import threading
+from contextlib import contextmanager
 from typing import Optional
 
+import numpy as np
 import torch
-from PIL import Image, UnidentifiedImageError
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from PIL import Image, ImageOps, UnidentifiedImageError
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from transformers import CLIPModel, CLIPProcessor
+from transformers import AutoImageProcessor, AutoModel, CLIPModel, CLIPProcessor
 
-MODEL_NAME = os.getenv("CLIP_MODEL", "openai/clip-vit-base-patch32")
+CLIP_NAME = os.getenv("CLIP_MODEL", "openai/clip-vit-base-patch32")
+DINO_NAME = os.getenv("DINO_MODEL", "facebook/dinov2-small")
+DB_PATH = os.getenv("VISUAL_SEARCH_DB", "visual_search.sqlite3")
+API_KEY = os.getenv("VISUAL_SEARCH_API_KEY")
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(12 * 1024 * 1024)))
 MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", "25000000"))
-API_KEY = os.getenv("VISUAL_SEARCH_API_KEY")
-ALLOWED_ORIGINS = [x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if x.strip()]
+MAX_TOP_K = int(os.getenv("MAX_TOP_K", "100"))
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
-app = FastAPI(title="Visual Product Search API", version="0.2.0")
-if ALLOWED_ORIGINS:
+app = FastAPI(
+    title="Visual Product Search API",
+    version="1.0.0",
+    description="Persistent image-first catalog search using CLIP and DINOv2.",
+)
+origins = [x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if x.strip()]
+if origins:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=ALLOWED_ORIGINS,
+        allow_origins=origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type", "X-API-Key"],
     )
 
-processor = None
-model = None
-model_lock = threading.Lock()
+model_lock = threading.RLock()
+db_lock = threading.RLock()
+clip_processor = clip_model = dino_processor = dino_model = None
 
 
-def load_model():
-    global processor, model
-    if model is None:
-        with model_lock:
-            if model is None:
-                processor = CLIPProcessor.from_pretrained(MODEL_NAME)
-                model = CLIPModel.from_pretrained(MODEL_NAME).to(DEVICE).eval()
-    return processor, model
+def connect_db():
+    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection.row_factory = sqlite3.Row
+    return connection
 
 
-def check_api_key(provided: Optional[str]):
+def init_db():
+    with db_lock, connect_db() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS listings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                listing_id TEXT,
+                title TEXT NOT NULL DEFAULT '',
+                price TEXT NOT NULL DEFAULT '',
+                listing_url TEXT NOT NULL DEFAULT '',
+                image_url TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                clip_vector BLOB NOT NULL,
+                dino_vector BLOB NOT NULL,
+                clip_dim INTEGER NOT NULL,
+                dino_dim INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(image_url)
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_listings_listing_id ON listings(listing_id)")
+        db.commit()
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
+
+
+def require_key(provided: Optional[str]):
     if API_KEY and provided != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 async def read_upload(upload: UploadFile) -> bytes:
     data = await upload.read(MAX_IMAGE_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty image.")
     if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="Image exceeds upload size limit.")
-    if not data:
-        raise HTTPException(status_code=400, detail="Empty image file.")
     return data
 
 
@@ -61,30 +102,188 @@ def decode_image(data: bytes) -> Image.Image:
         with Image.open(io.BytesIO(data)) as source:
             source.verify()
         with Image.open(io.BytesIO(data)) as source:
-            return source.convert("RGB")
+            return ImageOps.exif_transpose(source).convert("RGB")
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise HTTPException(status_code=400, detail="Invalid or unsafe image file.")
 
 
-def embed_images(images):
-    image_processor, clip_model = load_model()
-    inputs = image_processor(images=images, return_tensors="pt")
-    inputs = {key: value.to(DEVICE) for key, value in inputs.items()}
+def load_models():
+    global clip_processor, clip_model, dino_processor, dino_model
+    with model_lock:
+        if clip_model is None:
+            clip_processor = CLIPProcessor.from_pretrained(CLIP_NAME)
+            clip_model = CLIPModel.from_pretrained(CLIP_NAME).to(DEVICE).eval()
+        if dino_model is None:
+            dino_processor = AutoImageProcessor.from_pretrained(DINO_NAME)
+            dino_model = AutoModel.from_pretrained(DINO_NAME).to(DEVICE).eval()
+    return clip_processor, clip_model, dino_processor, dino_model
+
+
+def extract_vectors(images):
+    cp, cm, dp, dm = load_models()
     with model_lock, torch.inference_mode():
-        vision = clip_model.vision_model(pixel_values=inputs["pixel_values"])
-        features = clip_model.visual_projection(vision.pooler_output)
-        features = torch.nn.functional.normalize(features, dim=-1)
-    return features.cpu()
+        ci = cp(images=images, return_tensors="pt")
+        ci = {k: v.to(DEVICE) for k, v in ci.items()}
+        co = cm.vision_model(pixel_values=ci["pixel_values"])
+        cv = cm.visual_projection(co.pooler_output)
+        cv = torch.nn.functional.normalize(cv, dim=-1)
+
+        di = dp(images=images, return_tensors="pt")
+        di = {k: v.to(DEVICE) for k, v in di.items()}
+        dout = dm(**di)
+        # DINOv2 CLS token is a stable global descriptor.
+        dv = dout.last_hidden_state[:, 0]
+        dv = torch.nn.functional.normalize(dv, dim=-1)
+    return cv.cpu().numpy().astype(np.float32), dv.cpu().numpy().astype(np.float32)
+
+
+def vector_blob(vector):
+    return np.asarray(vector, dtype=np.float32).reshape(-1).tobytes()
+
+
+def row_vector(blob, dim):
+    return np.frombuffer(blob, dtype=np.float32, count=dim).copy()
+
+
+def public_listing(row, score=None):
+    item = {
+        "id": row["id"],
+        "listing_id": row["listing_id"],
+        "title": row["title"],
+        "price": row["price"],
+        "listing_url": row["listing_url"],
+        "image_url": row["image_url"],
+    }
+    if score is not None:
+        item["similarity"] = round(float(score), 5)
+        item["similarity_percent"] = round(max(0.0, min(1.0, float(score))) * 100, 2)
+    return item
 
 
 @app.get("/")
 def home():
-    return {"status": "online", "service": "CLIP Visual Search API", "version": "0.2.0"}
+    return {"status": "online", "service": "CLIP + DINOv2 Visual Search", "version": "1.0.0"}
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": model is not None, "device": DEVICE}
+    with connect_db() as db:
+        count = db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
+    return {
+        "status": "ok",
+        "device": DEVICE,
+        "clip_loaded": clip_model is not None,
+        "dino_loaded": dino_model is not None,
+        "indexed_images": count,
+    }
+
+
+@app.get("/stats")
+def stats():
+    with connect_db() as db:
+        count = db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
+        unique_ids = db.execute(
+            "SELECT COUNT(DISTINCT listing_id) FROM listings WHERE listing_id IS NOT NULL AND listing_id != ''"
+        ).fetchone()[0]
+    return {"indexed_images": count, "unique_listing_ids": unique_ids, "database": DB_PATH}
+
+
+@app.post("/ingest")
+async def ingest(
+    image: UploadFile = File(...),
+    metadata: str = Form("{}"),
+    x_api_key: Optional[str] = Header(None),
+):
+    require_key(x_api_key)
+    try:
+        meta = json.loads(metadata)
+        if not isinstance(meta, dict):
+            raise ValueError("metadata must be an object")
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="metadata must be a JSON object.")
+
+    raw = await read_upload(image)
+    decoded = decode_image(raw)
+    try:
+        clip, dino = extract_vectors([decoded])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Embedding extraction failed.") from exc
+
+    image_url = str(meta.get("image_url") or "").strip()
+    listing_id = str(meta.get("listing_id") or "").strip()
+    title = str(meta.get("title") or "").strip()
+    price = str(meta.get("price") or "").strip()
+    listing_url = str(meta.get("listing_url") or "").strip()
+    if not image_url:
+        # A stable key is required for deduplication; clients should provide source image URL.
+        image_url = f"upload:{listing_id}:{hash(raw)}"
+
+    with db_lock, connect_db() as db:
+        existing = db.execute("SELECT id FROM listings WHERE image_url = ?", (image_url,)).fetchone()
+        if existing:
+            return {"status": "duplicate", "id": existing["id"], "image_url": image_url}
+        cursor = db.execute(
+            """INSERT INTO listings
+            (listing_id,title,price,listing_url,image_url,metadata_json,clip_vector,dino_vector,clip_dim,dino_dim)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                listing_id, title, price, listing_url, image_url,
+                json.dumps(meta, ensure_ascii=False),
+                vector_blob(clip[0]), vector_blob(dino[0]),
+                int(clip.shape[1]), int(dino.shape[1]),
+            ),
+        )
+        db.commit()
+        new_id = cursor.lastrowid
+    return {"status": "indexed", "id": new_id, "image_url": image_url}
+
+
+@app.post("/search")
+async def search(
+    reference: UploadFile = File(...),
+    top_k: int = Form(20),
+    clip_weight: float = Form(0.5),
+    dino_weight: float = Form(0.5),
+    x_api_key: Optional[str] = Header(None),
+):
+    require_key(x_api_key)
+    if top_k < 1 or top_k > MAX_TOP_K:
+        raise HTTPException(status_code=400, detail=f"top_k must be between 1 and {MAX_TOP_K}.")
+    if clip_weight < 0 or dino_weight < 0 or clip_weight + dino_weight <= 0:
+        raise HTTPException(status_code=400, detail="Weights must be non-negative and not both zero.")
+
+    query_image = decode_image(await read_upload(reference))
+    try:
+        qclip, qdino = extract_vectors([query_image])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Query embedding failed.") from exc
+
+    with db_lock, connect_db() as db:
+        rows = db.execute("SELECT * FROM listings").fetchall()
+    if not rows:
+        return {"count": 0, "results": [], "message": "Catalog is empty. Ingest listings first."}
+
+    cw = clip_weight / (clip_weight + dino_weight)
+    dw = dino_weight / (clip_weight + dino_weight)
+    ranked = []
+    for row in rows:
+        cv = row_vector(row["clip_vector"], row["clip_dim"])
+        dv = row_vector(row["dino_vector"], row["dino_dim"])
+        if cv.shape != qclip[0].shape or dv.shape != qdino[0].shape:
+            continue
+        cs = float(np.dot(qclip[0], cv))
+        ds = float(np.dot(qdino[0], dv))
+        # Weighted cosine fusion. Scores are ranking signals, not probabilities.
+        combined = cw * cs + dw * ds
+        ranked.append((combined, row))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    results = [public_listing(row, score) for score, row in ranked[:top_k]]
+    return {
+        "count": len(results),
+        "model": {"clip": CLIP_NAME, "dino": DINO_NAME},
+        "weights": {"clip": cw, "dino": dw},
+        "results": results,
+    }
 
 
 @app.post("/rank")
@@ -95,24 +294,51 @@ async def rank_images(
     candidate3: Optional[UploadFile] = File(None),
     x_api_key: Optional[str] = Header(None),
 ):
-    check_api_key(x_api_key)
-    candidates = [item for item in (candidate1, candidate2, candidate3) if item]
+    require_key(x_api_key)
+    candidates = [x for x in (candidate1, candidate2, candidate3) if x is not None]
     images = [decode_image(await read_upload(reference))]
-    filenames = []
+    names = []
     for candidate in candidates:
         images.append(decode_image(await read_upload(candidate)))
-        filenames.append(candidate.filename or "image")
-
+        names.append(candidate.filename or "image")
     try:
-        features = embed_images(images)
+        clip, dino = extract_vectors(images)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Image embedding failed.") from exc
+        raise HTTPException(status_code=500, detail="Embedding extraction failed.") from exc
 
-    scores = torch.mv(features[1:], features[0]).tolist()
-    results = [{
-        "filename": name,
-        "cosine_similarity": round(float(score), 5),
-        "similarity_percent": round(max(0.0, min(1.0, float(score))) * 100, 2),
-    } for name, score in zip(filenames, scores)]
-    results.sort(key=lambda item: item["cosine_similarity"], reverse=True)
-    return {"count": len(results), "model": MODEL_NAME, "results": results}
+    scores = []
+    for i, name in enumerate(names, start=1):
+        cs = float(np.dot(clip[0], clip[i]))
+        ds = float(np.dot(dino[0], dino[i]))
+        combined = 0.5 * cs + 0.5 * ds
+        scores.append({
+            "filename": name,
+            "clip_similarity": round(cs, 5),
+            "dino_similarity": round(ds, 5),
+            "similarity": round(combined, 5),
+            "similarity_percent": round(max(0.0, min(1.0, combined)) * 100, 2),
+        })
+    scores.sort(key=lambda x: x["similarity"], reverse=True)
+    return {"count": len(scores), "results": scores}
+
+
+@app.get("/listings")
+def listings(limit: int = 50, offset: int = 0):
+    if limit < 1 or limit > 200 or offset < 0:
+        raise HTTPException(status_code=400, detail="Use limit 1..200 and offset >= 0.")
+    with connect_db() as db:
+        rows = db.execute(
+            "SELECT * FROM listings ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+        ).fetchall()
+    return {"count": len(rows), "results": [public_listing(row) for row in rows]}
+
+
+@app.delete("/listings/{listing_row_id}")
+def delete_listing(listing_row_id: int, x_api_key: Optional[str] = Header(None)):
+    require_key(x_api_key)
+    with db_lock, connect_db() as db:
+        cursor = db.execute("DELETE FROM listings WHERE id = ?", (listing_row_id,))
+        db.commit()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Listing not found.")
+    return {"status": "deleted", "id": listing_row_id}

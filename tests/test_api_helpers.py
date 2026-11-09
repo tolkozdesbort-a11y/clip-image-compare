@@ -55,7 +55,13 @@ def test_database_initializes(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "clip_weight,dino_weight,expected",
-    [(0.5, 0.5, (0.5, 0.5)), (2.0, 1.0, (2 / 3, 1 / 3)), (0.0, 4.0, (0.0, 1.0))],
+    [
+        (0.5, 0.5, (0.5, 0.5)),
+        (2.0, 1.0, (2 / 3, 1 / 3)),
+        (0.0, 4.0, (0.0, 1.0)),
+        (1e308, 1e308, (0.5, 0.5)),
+        (1e308, 5e307, (2 / 3, 1 / 3)),
+    ],
 )
 def test_normalize_weights(clip_weight, dino_weight, expected):
     assert api.normalize_weights(clip_weight, dino_weight) == pytest.approx(expected)

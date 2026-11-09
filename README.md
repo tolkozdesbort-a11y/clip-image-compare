@@ -90,6 +90,16 @@ Source code and installation steps are in [extension/](extension/). Load that fo
 
 The extension does not navigate result pages, crawl hidden endpoints, bypass login/CAPTCHA/anti-bot controls, or promise full marketplace coverage. Avito DOM selectors and image hosts can change and require a live browser test.
 
+## Import the existing Colab index
+
+The legacy Drive index can be imported without re-embedding the 1,190 existing images. Make the three files available in the runtime where the API database lives, then run:
+
+```bash
+python migrate_colab_index.py --index-dir /path/to/visual_search_combined --db visual_search.sqlite3
+```
+
+The importer expects `listings.json`, `clip_vectors.npy` and `dino_vectors.npy` with matching row counts. It normalizes vectors, skips image URLs already in SQLite and prints inserted/skipped totals. Back up the SQLite database before importing.
+
 ## Data and persistence
 
 SQLite path defaults to `visual_search.sqlite3`; override with `VISUAL_SEARCH_DB`. Persist this file on a durable volume and back it up. The existing Colab FAISS files are not automatically imported into this SQLite database.

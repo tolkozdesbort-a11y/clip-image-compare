@@ -7,6 +7,7 @@ marketplaces or bypass access controls.
 import io
 import json
 import hashlib
+import math
 import joblib
 import os
 import sqlite3
@@ -172,6 +173,15 @@ def get_reranker():
     return reranker_model
 
 
+def normalize_weights(clip_weight: float, dino_weight: float):
+    """Validate and normalize finite, non-negative search weights."""
+    if not math.isfinite(clip_weight) or not math.isfinite(dino_weight):
+        raise HTTPException(status_code=400, detail="Weights must be finite numbers.")
+    cw, dw = normalize_weights(clip_weight, dino_weight)
+    total = clip_weight + dino_weight
+    return clip_weight / total, dino_weight / total
+
+
 def vector_blob(vector):
     return np.asarray(vector, dtype=np.float32).reshape(-1).tobytes()
 
@@ -299,8 +309,6 @@ async def search(
     if not rows:
         return {"count": 0, "results": [], "message": "Catalog is empty. Ingest listings first."}
 
-    cw = clip_weight / (clip_weight + dino_weight)
-    dw = dino_weight / (clip_weight + dino_weight)
     valid_rows = []
     clip_vectors = []
     dino_vectors = []

@@ -64,7 +64,7 @@ def test_ingest_search_and_feedback_round_trip(client):
         "/ingest",
         headers=headers,
         files=files,
-        data={"metadata": __import__("json").dumps(metadata)},
+        data={"metadata": json.dumps(metadata)},
     )
     assert duplicate.status_code == 200
     assert duplicate.json()["status"] == "duplicate"

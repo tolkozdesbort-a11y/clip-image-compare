@@ -65,6 +65,24 @@ with tab_search:
                         st.markdown(f"[Открыть объявление]({item['listing_url']})")
                     if item.get("image_url"):
                         st.caption(item["image_url"])
+                    if item.get("id") and reference is not None:
+                        st.caption("Оцени совпадение — эти оценки сохраняются для отдельного reranker.")
+                        feedback_cols = st.columns(4)
+                        feedback_labels = ["0 · мимо", "1 · слабо", "2 · похоже", "3 · отлично"]
+                        for label_value, (feedback_col, feedback_label) in enumerate(zip(feedback_cols, feedback_labels)):
+                            if feedback_col.button(feedback_label, key=f"feedback_{item['id']}_{label_value}"):
+                                try:
+                                    feedback_response = requests.post(
+                                        f"{api_url}/feedback",
+                                        headers=headers,
+                                        files={"reference": (reference.name, reference.getvalue(), reference.type or "image/jpeg")},
+                                        data={"listing_row_id": item["id"], "label": label_value},
+                                        timeout=180,
+                                    )
+                                    feedback_response.raise_for_status()
+                                    st.success("Оценка сохранена.")
+                                except requests.RequestException as exc:
+                                    st.error(f"Не удалось сохранить оценку: {exc}")
 
 with tab_compare:
     col1, col2 = st.columns(2)

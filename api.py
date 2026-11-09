@@ -177,7 +177,8 @@ def normalize_weights(clip_weight: float, dino_weight: float):
     """Validate and normalize finite, non-negative search weights."""
     if not math.isfinite(clip_weight) or not math.isfinite(dino_weight):
         raise HTTPException(status_code=400, detail="Weights must be finite numbers.")
-    cw, dw = normalize_weights(clip_weight, dino_weight)
+    if clip_weight < 0 or dino_weight < 0 or clip_weight + dino_weight <= 0:
+        raise HTTPException(status_code=400, detail="Weights must be non-negative and not both zero.")
     total = clip_weight + dino_weight
     return clip_weight / total, dino_weight / total
 

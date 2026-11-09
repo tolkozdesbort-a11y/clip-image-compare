@@ -60,6 +60,9 @@ def import_index(index_dir, db_path):
     # Delay importing api until the source has passed validation.
     os.environ["VISUAL_SEARCH_DB"] = str(db_path)
     import api
+    # api may already be imported by a caller (notably tests or notebooks),
+    # so update the module constant as well as the environment variable.
+    api.DB_PATH = str(db_path)
 
     api.init_db()
     inserted = skipped = 0

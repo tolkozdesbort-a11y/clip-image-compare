@@ -50,3 +50,21 @@ def test_database_initializes(tmp_path, monkeypatch):
             for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
     assert "listings" in names
+
+
+@pytest.mark.parametrize(
+    "clip_weight,dino_weight,expected",
+    [(0.5, 0.5, (0.5, 0.5)), (2.0, 1.0, (2 / 3, 1 / 3)), (0.0, 4.0, (0.0, 1.0))],
+)
+def test_normalize_weights(clip_weight, dino_weight, expected):
+    assert api.normalize_weights(clip_weight, dino_weight) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "clip_weight,dino_weight",
+    [(-1.0, 1.0), (0.0, 0.0), (float("nan"), 1.0), (1.0, float("inf")), (float("-inf"), 1.0)],
+)
+def test_normalize_weights_rejects_invalid_values(clip_weight, dino_weight):
+    with pytest.raises(HTTPException) as error:
+        api.normalize_weights(clip_weight, dino_weight)
+    assert error.value.status_code == 400

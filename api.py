@@ -179,8 +179,12 @@ def normalize_weights(clip_weight: float, dino_weight: float):
         raise HTTPException(status_code=400, detail="Weights must be finite numbers.")
     if clip_weight < 0 or dino_weight < 0 or clip_weight + dino_weight <= 0:
         raise HTTPException(status_code=400, detail="Weights must be non-negative and not both zero.")
-    total = clip_weight + dino_weight
-    return clip_weight / total, dino_weight / total
+    # Scale before adding: two finite, very large floats can overflow their sum.
+    scale = max(clip_weight, dino_weight)
+    scaled_clip = clip_weight / scale
+    scaled_dino = dino_weight / scale
+    total = scaled_clip + scaled_dino
+    return scaled_clip / total, scaled_dino / total
 
 
 def vector_blob(vector):

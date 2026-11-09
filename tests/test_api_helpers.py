@@ -32,6 +32,15 @@ def test_decode_rejects_invalid_image():
     assert error.value.status_code == 400
 
 
+def test_decode_rejects_images_over_pixel_limit(monkeypatch):
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (12, 34, 56)).save(buffer, format="PNG")
+    monkeypatch.setattr(api, "MAX_IMAGE_PIXELS", 63)
+    with pytest.raises(HTTPException) as error:
+        api.decode_image(buffer.getvalue())
+    assert error.value.status_code == 413
+
+
 def test_database_initializes(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "DB_PATH", str(tmp_path / "catalog.sqlite3"))
     api.init_db()

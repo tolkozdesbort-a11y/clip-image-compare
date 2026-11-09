@@ -188,7 +188,18 @@ def vector_blob(vector):
 
 
 def row_vector(blob, dim):
-    return np.frombuffer(blob, dtype=np.float32, count=dim).copy()
+    """Decode one stored embedding and reject truncated or corrupted blobs."""
+    if not isinstance(dim, int) or dim <= 0:
+        raise ValueError("Embedding dimension must be a positive integer.")
+    expected_bytes = dim * np.dtype(np.float32).itemsize
+    if blob is None or len(blob) != expected_bytes:
+        raise ValueError(
+            f"Invalid embedding blob length: expected {expected_bytes} bytes."
+        )
+    vector = np.frombuffer(blob, dtype=np.float32, count=dim).copy()
+    if not np.isfinite(vector).all():
+        raise ValueError("Embedding blob contains NaN or infinite values.")
+    return vector
 
 
 def public_listing(row, score=None):
@@ -313,8 +324,12 @@ async def search(
     clip_vectors = []
     dino_vectors = []
     for row in rows:
-        cv = row_vector(row["clip_vector"], row["clip_dim"])
-        dv = row_vector(row["dino_vector"], row["dino_dim"])
+        try:
+            cv = row_vector(row["clip_vector"], row["clip_dim"])
+            dv = row_vector(row["dino_vector"], row["dino_dim"])
+        except (TypeError, ValueError):
+            # Ignore damaged legacy rows rather than failing the entire search.
+            continue
         if cv.shape != qclip[0].shape or dv.shape != qdino[0].shape:
             continue
         valid_rows.append(row)

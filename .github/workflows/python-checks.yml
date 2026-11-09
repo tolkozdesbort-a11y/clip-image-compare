@@ -20,7 +20,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Compile Python files
-        run: python -m compileall -q api.py app.py train_reranker.py tests
+        run: python -m compileall -q api.py app.py train_reranker.py migrate_colab_index.py tests
       - name: Check extension JavaScript syntax
         run: |
           node --check extension/background.js

@@ -117,6 +117,14 @@ def decode_image(data: bytes) -> Image.Image:
         with Image.open(io.BytesIO(data)) as source:
             source.verify()
         with Image.open(io.BytesIO(data)) as source:
+            # Pillow's MAX_IMAGE_PIXELS threshold emits a warning before it
+            # raises an error. Enforce our configured limit explicitly so
+            # oversized images are rejected rather than merely logged.
+            if source.width * source.height > MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Image exceeds the {MAX_IMAGE_PIXELS}-pixel limit.",
+                )
             return ImageOps.exif_transpose(source).convert("RGB")
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise HTTPException(status_code=400, detail="Invalid or unsafe image file.")

@@ -7,6 +7,7 @@ marketplaces or bypass access controls.
 import io
 import json
 import hashlib
+import joblib
 import os
 import sqlite3
 import threading
@@ -27,6 +28,7 @@ API_KEY = os.getenv("VISUAL_SEARCH_API_KEY")
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(12 * 1024 * 1024)))
 MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", "25000000"))
 MAX_TOP_K = int(os.getenv("MAX_TOP_K", "100"))
+RERANKER_PATH = os.getenv("RERANKER_PATH", "reranker.joblib")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
@@ -48,6 +50,8 @@ if origins:
 model_lock = threading.RLock()
 db_lock = threading.RLock()
 clip_processor = clip_model = dino_processor = dino_model = None
+reranker_model = None
+reranker_mtime = None
 
 
 def connect_db():
@@ -76,6 +80,16 @@ def init_db():
             )
         """)
         db.execute("CREATE INDEX IF NOT EXISTS idx_listings_listing_id ON listings(listing_id)")
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                listing_row_id INTEGER NOT NULL,
+                label INTEGER NOT NULL CHECK(label BETWEEN 0 AND 3),
+                clip_similarity REAL NOT NULL,
+                dino_similarity REAL NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         db.commit()
 
 
@@ -136,6 +150,18 @@ def extract_vectors(images):
         dv = dout.last_hidden_state[:, 0]
         dv = torch.nn.functional.normalize(dv, dim=-1)
     return cv.cpu().numpy().astype(np.float32), dv.cpu().numpy().astype(np.float32)
+
+
+def get_reranker():
+    global reranker_model, reranker_mtime
+    if not os.path.isfile(RERANKER_PATH):
+        return None
+    mtime = os.path.getmtime(RERANKER_PATH)
+    if reranker_model is None or reranker_mtime != mtime:
+        with model_lock:
+            reranker_model = joblib.load(RERANKER_PATH)
+            reranker_mtime = mtime
+    return reranker_model
 
 
 def vector_blob(vector):
@@ -277,15 +303,76 @@ async def search(
         ds = float(np.dot(qdino[0], dv))
         # Weighted cosine fusion. Scores are ranking signals, not probabilities.
         combined = cw * cs + dw * ds
-        ranked.append((combined, row))
-    ranked.sort(key=lambda pair: pair[0], reverse=True)
-    results = [public_listing(row, score) for score, row in ranked[:top_k]]
+        ranked.append((combined, row, cs, ds))
+    reranker = get_reranker()
+    reranker_used = reranker is not None
+    if reranker is not None and ranked:
+        feature_matrix = np.asarray([[entry[2], entry[3]] for entry in ranked], dtype=np.float32)
+        probabilities = reranker.predict_proba(feature_matrix)[:, 1]
+        ranked = [
+            (float(probabilities[i]), entry[1], entry[2], entry[3], entry[0])
+            for i, entry in enumerate(ranked)
+        ]
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        results = []
+        for score, row, cs, ds, base_score in ranked[:top_k]:
+            item = public_listing(row, base_score)
+            item["reranker_score"] = round(float(score), 5)
+            results.append(item)
+    else:
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        results = [public_listing(row, score) for score, row, _, _ in ranked[:top_k]]
     return {
         "count": len(results),
         "model": {"clip": CLIP_NAME, "dino": DINO_NAME},
         "weights": {"clip": cw, "dino": dw},
+        "reranker_used": reranker_used,
         "results": results,
     }
+
+
+@app.post("/feedback")
+async def submit_feedback(
+    reference: UploadFile = File(...),
+    listing_row_id: int = Form(...),
+    label: int = Form(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Store explicit human relevance feedback (0=unrelated, 3=excellent match)."""
+    require_key(x_api_key)
+    if label not in (0, 1, 2, 3):
+        raise HTTPException(status_code=400, detail="label must be 0, 1, 2 or 3.")
+    with connect_db() as db:
+        row = db.execute("SELECT * FROM listings WHERE id = ?", (listing_row_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Listing not found.")
+    query_image = decode_image(await read_upload(reference))
+    try:
+        qclip, qdino = extract_vectors([query_image])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Feedback embedding failed.") from exc
+    cv = row_vector(row["clip_vector"], row["clip_dim"])
+    dv = row_vector(row["dino_vector"], row["dino_dim"])
+    if cv.shape != qclip[0].shape or dv.shape != qdino[0].shape:
+        raise HTTPException(status_code=409, detail="Model dimensions differ from indexed catalog.")
+    cs = float(np.dot(qclip[0], cv))
+    ds = float(np.dot(qdino[0], dv))
+    with db_lock, connect_db() as db:
+        cursor = db.execute(
+            "INSERT INTO feedback (listing_row_id,label,clip_similarity,dino_similarity) VALUES (?,?,?,?)",
+            (listing_row_id, label, cs, ds),
+        )
+        db.commit()
+    return {"status": "saved", "feedback_id": cursor.lastrowid, "label": label}
+
+
+@app.get("/feedback/stats")
+def feedback_stats(x_api_key: Optional[str] = Header(None)):
+    require_key(x_api_key)
+    with connect_db() as db:
+        total = db.execute("SELECT COUNT(*) FROM feedback").fetchone()[0]
+        rows = db.execute("SELECT label, COUNT(*) AS count FROM feedback GROUP BY label").fetchall()
+    return {"total": total, "labels": {str(row["label"]): row["count"] for row in rows}}
 
 
 @app.post("/rank")

@@ -21,5 +21,5 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Compile Python files
         run: python -m compileall -q api.py app.py train_reranker.py tests
-      - name: Run helper tests
+      - name: Check extension JavaScript syntax\n        run: |\n          node --check extension/background.js\n          node --check extension/content.js\n          node --check extension/popup.js\n      - name: Run helper tests
         run: pytest -q

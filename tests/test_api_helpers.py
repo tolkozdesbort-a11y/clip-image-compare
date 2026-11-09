@@ -68,3 +68,30 @@ def test_normalize_weights_rejects_invalid_values(clip_weight, dino_weight):
     with pytest.raises(HTTPException) as error:
         api.normalize_weights(clip_weight, dino_weight)
     assert error.value.status_code == 400
+
+
+def test_migration_normalizes_valid_embeddings():
+    from migrate_colab_index import normalize_embeddings
+
+    values = np.zeros((2, 512), dtype=np.float32)
+    values[0, 0] = 3.0
+    values[1, 1] = 4.0
+    normalized = normalize_embeddings(values, "CLIP", 512)
+    np.testing.assert_allclose(np.linalg.norm(normalized, axis=1), [1.0, 1.0])
+
+
+@pytest.mark.parametrize(
+    "values,expected_dim",
+    [
+        (np.ones((2, 511), dtype=np.float32), 512),
+        (np.ones((2, 385), dtype=np.float32), 384),
+        (np.array([[np.nan] * 512], dtype=np.float32), 512),
+        (np.zeros((1, 384), dtype=np.float32), 384),
+        (np.array([[np.inf] * 384], dtype=np.float32), 384),
+    ],
+)
+def test_migration_rejects_invalid_embeddings(values, expected_dim):
+    from migrate_colab_index import normalize_embeddings
+
+    with pytest.raises(ValueError):
+        normalize_embeddings(values, "embedding", expected_dim)

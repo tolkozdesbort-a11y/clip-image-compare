@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -95,3 +96,38 @@ def test_migration_rejects_invalid_embeddings(values, expected_dim):
 
     with pytest.raises(ValueError):
         normalize_embeddings(values, "embedding", expected_dim)
+
+
+def test_migration_uses_requested_database_even_when_api_is_loaded(tmp_path, monkeypatch):
+    from migrate_colab_index import import_index
+
+    source = tmp_path / "legacy"
+    source.mkdir()
+    listings = [
+        {"listing_id": "a", "title": "Item A", "image_url": "https://example.test/a.jpg"},
+        {"listing_id": "b", "title": "Item B", "image_url": "https://example.test/b.jpg"},
+    ]
+    (source / "listings.json").write_text(json.dumps(listings), encoding="utf-8")
+
+    clip = np.zeros((2, 512), dtype=np.float32)
+    clip[:, 0] = 1.0
+    dino = np.zeros((2, 384), dtype=np.float32)
+    dino[:, 0] = 1.0
+    np.save(source / "clip_vectors.npy", clip)
+    np.save(source / "dino_vectors.npy", dino)
+
+    requested_db = tmp_path / "requested.sqlite3"
+    monkeypatch.setattr(api, "DB_PATH", str(tmp_path / "stale.sqlite3"))
+
+    result = import_index(source, requested_db)
+
+    assert result["inserted"] == 2
+    assert result["skipped"] == 0
+    assert api.DB_PATH == str(requested_db)
+    with api.connect_db() as db:
+        rows = db.execute("SELECT listing_id, clip_dim, dino_dim FROM listings ORDER BY id").fetchall()
+    assert [(row["listing_id"], row["clip_dim"], row["dino_dim"]) for row in rows] == [
+        ("a", 512, 384),
+        ("b", 512, 384),
+    ]
+    assert not (tmp_path / "stale.sqlite3").exists()

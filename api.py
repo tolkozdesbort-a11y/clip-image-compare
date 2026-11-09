@@ -293,17 +293,30 @@ async def search(
 
     cw = clip_weight / (clip_weight + dino_weight)
     dw = dino_weight / (clip_weight + dino_weight)
-    ranked = []
+    valid_rows = []
+    clip_vectors = []
+    dino_vectors = []
     for row in rows:
         cv = row_vector(row["clip_vector"], row["clip_dim"])
         dv = row_vector(row["dino_vector"], row["dino_dim"])
         if cv.shape != qclip[0].shape or dv.shape != qdino[0].shape:
             continue
-        cs = float(np.dot(qclip[0], cv))
-        ds = float(np.dot(qdino[0], dv))
-        # Weighted cosine fusion. Scores are ranking signals, not probabilities.
-        combined = cw * cs + dw * ds
-        ranked.append((combined, row, cs, ds))
+        valid_rows.append(row)
+        clip_vectors.append(cv)
+        dino_vectors.append(dv)
+
+    ranked = []
+    if valid_rows:
+        # Batched exact cosine search is efficient for small/medium catalogs.
+        clip_matrix = np.stack(clip_vectors)
+        dino_matrix = np.stack(dino_vectors)
+        clip_scores = clip_matrix @ qclip[0]
+        dino_scores = dino_matrix @ qdino[0]
+        combined_scores = cw * clip_scores + dw * dino_scores
+        ranked = [
+            (float(combined_scores[i]), row, float(clip_scores[i]), float(dino_scores[i]))
+            for i, row in enumerate(valid_rows)
+        ]
     reranker = get_reranker()
     reranker_used = reranker is not None
     if reranker is not None and ranked:

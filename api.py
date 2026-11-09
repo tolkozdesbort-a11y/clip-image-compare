@@ -6,6 +6,7 @@ marketplaces or bypass access controls.
 """
 import io
 import json
+import hashlib
 import os
 import sqlite3
 import threading
@@ -179,7 +180,8 @@ def health():
 
 
 @app.get("/stats")
-def stats():
+def stats(x_api_key: Optional[str] = Header(None)):
+    require_key(x_api_key)
     with connect_db() as db:
         count = db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
         unique_ids = db.execute(
@@ -216,7 +218,7 @@ async def ingest(
     listing_url = str(meta.get("listing_url") or "").strip()
     if not image_url:
         # A stable key is required for deduplication; clients should provide source image URL.
-        image_url = f"upload:{listing_id}:{hash(raw)}"
+        image_url = f"upload:{listing_id}:{hashlib.sha256(raw).hexdigest()}"
 
     with db_lock, connect_db() as db:
         existing = db.execute("SELECT id FROM listings WHERE image_url = ?", (image_url,)).fetchone()
@@ -323,7 +325,8 @@ async def rank_images(
 
 
 @app.get("/listings")
-def listings(limit: int = 50, offset: int = 0):
+def listings(limit: int = 50, offset: int = 0, x_api_key: Optional[str] = Header(None)):
+    require_key(x_api_key)
     if limit < 1 or limit > 200 or offset < 0:
         raise HTTPException(status_code=400, detail="Use limit 1..200 and offset >= 0.")
     with connect_db() as db:

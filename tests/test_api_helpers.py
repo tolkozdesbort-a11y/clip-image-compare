@@ -131,3 +131,23 @@ def test_migration_uses_requested_database_even_when_api_is_loaded(tmp_path, mon
         ("b", 512, 384),
     ]
     assert not (tmp_path / "stale.sqlite3").exists()
+
+
+@pytest.mark.parametrize(
+    "blob,dim",
+    [
+        (b"", 3),
+        (np.array([1.0, 2.0], dtype=np.float32).tobytes(), 3),
+        (np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32).tobytes(), 3),
+        (np.array([1.0, np.nan, 3.0], dtype=np.float32).tobytes(), 3),
+        (np.array([1.0, np.inf, 3.0], dtype=np.float32).tobytes(), 3),
+    ],
+)
+def test_row_vector_rejects_corrupt_blobs(blob, dim):
+    with pytest.raises(ValueError):
+        api.row_vector(blob, dim)
+
+
+def test_row_vector_rejects_invalid_dimension():
+    with pytest.raises(ValueError):
+        api.row_vector(b"", 0)

@@ -1,4 +1,9 @@
 import io
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import pytest
@@ -49,7 +54,7 @@ def test_ingest_search_and_feedback_round_trip(client):
         "/ingest",
         headers=headers,
         files=files,
-        data={"metadata": __import__("json").dumps(metadata)},
+        data={"metadata": json.dumps(metadata)},
     )
     assert response.status_code == 200
     assert response.json()["status"] == "indexed"

@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Visual Search — Avito Visible Collector",
+  "version": "1.0.0",
+  "description": "Adds currently rendered Avito listing images to your own visual-search catalog.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://www.avito.ru/*",
+    "https://*.avito.ru/*",
+    "https://*.avito.st/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Visual Search collector"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.avito.ru/*", "https://*.avito.ru/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

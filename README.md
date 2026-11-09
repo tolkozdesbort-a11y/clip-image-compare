@@ -33,6 +33,16 @@ streamlit run app.py
 
 Set `VISUAL_SEARCH_API_URL` and `VISUAL_SEARCH_API_KEY` for Streamlit, or enter the API address/key in its sidebar. The first request downloads CLIP and DINOv2 weights; this requires network access. CPU works but is slower; CUDA is used automatically when available.
 
+## Docker Compose
+
+Copy `.env.example` to `.env`, replace the placeholder with a newly generated secret, then run:
+
+```bash
+docker compose up --build -d
+```
+
+Open the Streamlit UI at `http://localhost:8501`. The API is available locally at `http://127.0.0.1:8000`. The SQLite database is stored in a named Docker volume. Do not publish the API port directly to the internet without HTTPS, authentication and suitable network controls.
+
 ## API
 
 Image endpoints use multipart form data. When `VISUAL_SEARCH_API_KEY` is configured, send it in `X-API-Key`. If unset, the API runs without authentication; never expose that configuration publicly.

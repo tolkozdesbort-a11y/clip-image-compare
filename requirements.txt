@@ -7,3 +7,4 @@ uvicorn[standard]
 python-multipart
 numpy
 requests
+joblib

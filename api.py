@@ -12,7 +12,7 @@ import joblib
 import os
 import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import numpy as np
@@ -33,10 +33,17 @@ RERANKER_PATH = os.getenv("RERANKER_PATH", "reranker.joblib")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
+@asynccontextmanager
+async def lifespan(_app):
+    init_db()
+    yield
+
+
 app = FastAPI(
     title="Visual Product Search API",
     version="1.0.0",
     description="Persistent image-first catalog search using CLIP and DINOv2.",
+    lifespan=lifespan,
 )
 origins = [x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if x.strip()]
 if origins:
@@ -92,11 +99,6 @@ def init_db():
             )
         """)
         db.commit()
-
-
-@app.on_event("startup")
-def startup():
-    init_db()
 
 
 def require_key(provided: Optional[str]):
